@@ -1,0 +1,442 @@
+package com.example.meraaiaagent
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import java.net.URLEncoder
+import java.util.Locale
+import java.util.regex.Pattern
+
+private data class AssistantUiState(
+    val recognizedText: String = "अभी तक कोई आवाज़ नहीं सुनी गई",
+    val status: String = "माइक्रोफोन अनुमति लें",
+    val isListening: Boolean = false
+)
+
+class MainActivity : ComponentActivity() {
+
+    private var uiState by mutableStateOf(AssistantUiState())
+    private var speechRecognizer: SpeechRecognizer? = null
+
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            startListening()
+        } else {
+            uiState = uiState.copy(
+                status = "माइक्रोफोन अनुमति जरूरी है",
+                recognizedText = "Permission denied"
+            )
+            Toast.makeText(this, "माइक्रोफोन की अनुमति दें", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme(
+                colorScheme = MaterialTheme.colorScheme,
+                typography = MaterialTheme.typography
+            ) {
+                MeraAIAgentScreen(
+                    state = uiState,
+                    onMicClick = ::handleMicClick
+                )
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        speechRecognizer?.stopListening()
+        speechRecognizer?.destroy()
+        speechRecognizer = null
+    }
+
+    private fun handleMicClick() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            startListening()
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun startListening() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            uiState = uiState.copy(
+                recognizedText = "Voice input उपलब्ध नहीं है",
+                status = "इस डिवाइस पर SpeechRecognizer उपलब्ध नहीं है",
+                isListening = false
+            )
+            return
+        }
+
+        if (speechRecognizer == null) {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+            speechRecognizer?.setRecognitionListener(createRecognitionListener())
+        }
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "हिंदी में कमांड बोलें")
+        }
+
+        uiState = uiState.copy(
+            status = "सुन रहा हूँ...",
+            isListening = true
+        )
+        speechRecognizer?.startListening(intent)
+    }
+
+    private fun createRecognitionListener(): RecognitionListener {
+        return object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                Log.d("MeraAIAgent", "Ready for speech")
+            }
+
+            override fun onBeginningOfSpeech() {
+                uiState = uiState.copy(status = "आवाज़ सुन रहे हैं...")
+            }
+
+            override fun onRmsChanged(rmsdB: Float) = Unit
+
+            override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+            override fun onEndOfSpeech() {
+                uiState = uiState.copy(status = "कमांड प्रोसेसिंग...", isListening = false)
+            }
+
+            override fun onError(error: Int) {
+                val msg = when (error) {
+                    SpeechRecognizer.ERROR_AUDIO -> "ऑडियो एरर"
+                    SpeechRecognizer.ERROR_CLIENT -> "क्लाइंट एरर"
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "माइक्रोफोन अनुमति नहीं मिली"
+                    SpeechRecognizer.ERROR_NETWORK -> "नेटवर्क एरर"
+                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "नेटवर्क टाइम आउट"
+                    SpeechRecognizer.ERROR_NO_MATCH -> "कोई आवाज़ समझ नहीं आई"
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "रिकॉग्नाइज़र व्यस्त है"
+                    SpeechRecognizer.ERROR_SERVER -> "सर्वर एरर"
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "कोई आवाज़ नहीं मिली"
+                    else -> "स्मार्ट रिकॉग्निशन में समस्या"
+                }
+                uiState = uiState.copy(
+                    recognizedText = "कोई कमांड नहीं मिली",
+                    status = msg,
+                    isListening = false
+                )
+            }
+
+            override fun onResults(results: Bundle?) {
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val command = matches?.firstOrNull()?.orEmpty() ?: ""
+                handleVoiceCommand(command)
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) = Unit
+
+            override fun onEvent(eventType: Int, params: Bundle?) = Unit
+        }
+    }
+
+    private fun handleVoiceCommand(command: String) {
+        val trimmedText = command.trim()
+        if (trimmedText.isEmpty()) {
+            uiState = uiState.copy(
+                recognizedText = "कोई कमांड नहीं मिला",
+                status = "कृपया फिर से बोलें",
+                isListening = false
+            )
+            return
+        }
+
+        uiState = uiState.copy(
+            recognizedText = trimmedText,
+            status = "कमांड समझी गई",
+            isListening = false
+        )
+
+        val action = parseCommand(trimmedText)
+        when (action) {
+            is Action.OpenYoutube -> openAppOrWebsite("com.google.android.youtube", "https://www.youtube.com")
+            is Action.OpenChrome -> openAppOrWebsite("com.android.chrome", "https://www.google.com")
+            is Action.SearchGoogle -> openGoogleSearch(action.query)
+            is Action.OpenUrl -> openWebsite(action.url)
+            is Action.Unknown -> {
+                uiState = uiState.copy(
+                    status = "कमांड समझ नहीं आई",
+                    recognizedText = trimmedText
+                )
+                Toast.makeText(this, "कमांड समझ नहीं आई", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun parseCommand(commandText: String): Action {
+        val raw = commandText.lowercase(Locale("hi", "IN"))
+        val openingWords = listOf("खोलो", "खोलें", "खोल", "start", "open")
+
+        if (raw.contains("youtube") && openingWords.any { raw.contains(it) }) {
+            return Action.OpenYoutube
+        }
+
+        if (raw.contains("chrome") && openingWords.any { raw.contains(it) }) {
+            return Action.OpenChrome
+        }
+
+        if (raw.contains("google") && (raw.contains("search") || raw.contains("सर्च") || raw.contains("खोज"))) {
+            val query = extractGoogleQuery(commandText)
+            return if (query.isNotBlank()) Action.SearchGoogle(query) else Action.SearchGoogle("")
+        }
+
+        val urlMatch = URL_PATTERN.find(commandText) ?: URL_PATTERN.find(raw)
+        if (urlMatch != null) {
+            val value = urlMatch.groupValues[0].trim()
+            return Action.OpenUrl(normalizeUrl(value))
+        }
+
+        return Action.Unknown
+    }
+
+    private fun extractGoogleQuery(commandText: String): String {
+        val raw = commandText.lowercase(Locale("hi", "IN"))
+        val afterGoogle = raw.substringAfter("google", missingDelimiterValue = raw)
+        val cleaned = afterGoogle
+            .replace("पर", " ")
+            .replace("में", " ")
+            .replace("search", " ")
+            .replace("सर्च", " ")
+            .replace("खोज", " ")
+            .replace("करो", " ")
+            .replace("करें", " ")
+            .replace("", " ")
+            .trim()
+        return cleaned.replace(Regex("\\s+"), " ").trim()
+    }
+
+    private fun openAppOrWebsite(packageName: String, website: String) {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        if (launchIntent != null) {
+            startActivity(launchIntent)
+        } else {
+            openWebsite(website)
+        }
+    }
+
+    private fun openGoogleSearch(query: String) {
+        val encodedQuery = if (query.isBlank()) {
+            ""
+        } else {
+            URLEncoder.encode(query, "UTF-8")
+        }
+        val url = if (encodedQuery.isBlank()) {
+            "https://www.google.com"
+        } else {
+            "https://www.google.com/search?q=$encodedQuery"
+        }
+        openWebsite(url)
+    }
+
+    private fun openWebsite(url: String) {
+        val normalized = normalizeUrl(url)
+        val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(normalized)).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+
+        try {
+            startActivity(browserIntent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "वेब खोलने में समस्या हुई", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun normalizeUrl(value: String): String {
+        val trimmed = value.trim()
+        return when {
+            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
+            trimmed.contains(".") -> "https://$trimmed"
+            else -> "https://$trimmed"
+        }
+    }
+
+    companion object {
+        private val URL_PATTERN = Pattern.compile(
+            "((https?://)?([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}(/[^")\\s]*)?)"
+        )
+    }
+
+    private sealed interface Action {
+        data object OpenYoutube : Action
+        data object OpenChrome : Action
+        data class SearchGoogle(val query: String) : Action
+        data class OpenUrl(val url: String) : Action
+        data object Unknown : Action
+    }
+}
+
+@Composable
+fun MeraAIAgentScreen(
+    state: AssistantUiState,
+    onMicClick: () -> Unit
+) {
+    val context = LocalContext.current
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color(0xFFF3F7FF)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "Mera AI Agent",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF1C2B5E)
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "हिंदी में बोलें",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color(0xFF495D8A)
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                shape = RoundedCornerShape(20.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    Text(
+                        text = "Recognized command",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color(0xFF6678A0)
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = state.recognizedText,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        color = Color(0xFF16223C),
+                        textAlign = TextAlign.Start,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = state.status,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (state.isListening) Color(0xFF0B8A65) else Color(0xFF4D5E82)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Box(
+                modifier = Modifier
+                    .size(110.dp)
+                    .clip(CircleShape)
+                    .background(if (state.isListening) Color(0xFF1B9C85) else Color(0xFF2F6BFF)),
+                contentAlignment = Alignment.Center
+            ) {
+                Button(
+                    onClick = onMicClick,
+                    modifier = Modifier.size(96.dp),
+                    shape = CircleShape,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "Microphone",
+                        tint = Color.White,
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(onClick = { Toast.makeText(context, "YouTube खोलो", Toast.LENGTH_SHORT).show() }) {
+                    Text("YouTube")
+                }
+                Button(onClick = { Toast.makeText(context, "Chrome खोलो", Toast.LENGTH_SHORT).show() }) {
+                    Text("Chrome")
+                }
+            }
+        }
+    }
+}

@@ -1,2 +1,3 @@
-# MeraAIAgent
-Hindi voice assistant Android app",
+<resources>
+    <string name="app_name">Mera AI Agent</string>
+</resources>
